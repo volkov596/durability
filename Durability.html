@@ -1,0 +1,1891 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, shrink-to-fit=no">
+  <title>Durability</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+    /* ---- Base ---- */
+    body {
+      margin: 0;
+      overflow: hidden;
+      overscroll-behavior: none;       /* prevent pull-to-refresh */
+      font-family: 'Press Start 2P', cursive;
+      background-color: #222;
+      color: white;
+      width: 100%;
+    }
+    html { overflow: hidden; width: 100%; height: 100%; }
+    /* Remove 300 ms tap delay on all buttons */
+    button { touch-action: manipulation; }
+
+    /* ---- Game Container ---- */
+    #game-container {
+      position: relative;
+      width: 100%;
+      height: 100vh;                       /* base fallback */
+      height: var(--real-vh, 100dvh);      /* JS-set on load + resize via updateRealVH() */
+      touch-action: none;
+    }
+    #game-name {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 13vh;
+      text-align: center;
+      color: rgba(255, 255, 255, 0.1);
+      text-transform: uppercase;
+      pointer-events: none;
+      user-select: none;
+    }
+
+    /* ---- Wall ---- */
+    #wall {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      width: 100%;
+      height: 6.25vh;
+      background-color: #7e7e7e;   /* concrete grey — JS resets inline style here */
+      overflow: hidden;
+      transition: background-color 0.2s;
+    }
+
+    /* Concrete grain texture (SVG fractalNoise, rendered once and cached) */
+    #wall::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='36'%3E%3Cfilter id='f'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.55' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='120' height='36' filter='url(%23f)' opacity='0.5'/%3E%3C/svg%3E");
+      background-size: 120px 36px;
+      mix-blend-mode: overlay;
+      opacity: 0.60;
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    /* Rust/corrosion staining — opacity driven by --corrosion-level (0→1) */
+    #wall::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 40% 100% at 12%  50%, rgba(162,62,8,0.95)  0%, transparent 65%),
+        radial-gradient(ellipse 25% 80%  at 38%  25%, rgba(182,78,10,0.82) 0%, transparent 65%),
+        radial-gradient(ellipse 35% 100% at 62%  72%, rgba(148,52,5,0.90)  0%, transparent 65%),
+        radial-gradient(ellipse 30% 90%  at 85%  38%, rgba(172,70,8,0.87)  0%, transparent 65%),
+        radial-gradient(ellipse 20% 70%  at 50%  50%, rgba(192,88,15,0.72) 0%, transparent 65%);
+      opacity: calc(var(--corrosion-level, 0) * 0.18);
+      pointer-events: none;
+      z-index: 8;
+      transition: opacity 0.6s ease;
+    }
+    /* Rebar — rendered by JS canvas, replaces .bar / .bartopribs / .barbottomribs */
+    #rebar-canvas {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      left: 0;
+      width: 100%;
+      height: 1.26vh;
+      z-index: 3;
+    }
+
+    /* ---- Repair Mortar Patches ---- */
+    #wall-patches {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 2;   /* same as cracks; cracks are later in DOM so they render on top */
+    }
+    #wall-patches .patch {
+      position: absolute;
+      top: 0;
+      height: 75%;             /* extends a little below the rebar centre line */
+      background:
+        linear-gradient(to bottom, rgba(180,180,180,0.65) 0%, rgba(168,168,168,0.65) 100%);
+      /* Saw-tooth edges (top straight = wall surface; left/right/bottom toothed like a repair cut) */
+      clip-path: polygon(0.0% 0.0%, 100.0% 0.0%, 96.0% 7.1%, 100.0% 14.3%, 96.0% 21.4%, 100.0% 28.6%, 96.0% 35.7%, 100.0% 42.9%, 96.0% 50.0%, 100.0% 57.1%, 96.0% 64.3%, 100.0% 71.4%, 96.0% 78.6%, 100.0% 85.7%, 96.0% 92.9%, 100.0% 100.0%, 92.9% 96.0%, 85.7% 100.0%, 78.6% 96.0%, 71.4% 100.0%, 64.3% 96.0%, 57.1% 100.0%, 50.0% 96.0%, 42.9% 100.0%, 35.7% 96.0%, 28.6% 100.0%, 21.4% 96.0%, 14.3% 100.0%, 7.1% 96.0%, 0.0% 100.0%, 4.0% 92.9%, 0.0% 85.7%, 4.0% 78.6%, 0.0% 71.4%, 4.0% 64.3%, 0.0% 57.1%, 4.0% 50.0%, 0.0% 42.9%, 4.0% 35.7%, 0.0% 28.6%, 4.0% 21.4%, 0.0% 14.3%, 4.0% 7.1%, 0.0% 0.0%);
+      filter: blur(4px);       /* soften edges so patches feather into the concrete */
+      opacity: 0;              /* JS fades each to 1 sequentially */
+      transition: opacity 0.5s ease;
+    }
+
+    /* ---- Coating Line — thick glossy protective sealant ---- */
+    #coating-line {
+      display: none;
+      position: absolute;
+      bottom: 6.25vh;
+      left: 0;
+      width: 100%;
+      height: 1.1vh;
+      background: linear-gradient(to bottom,
+        rgba(255,255,255,0.58) 0%,
+        rgba(228,188,250,0.88) 18%,
+        rgba(185,138,218,0.92) 40%,
+        rgba(155,102,198,0.88) 65%,
+        rgba(118,68,165,0.68)  85%,
+        rgba(78,38,128,0.45)   100%
+      );
+      box-shadow:
+        0 0 10px rgba(195,155,211,0.75),
+        0 0 18px rgba(195,155,211,0.35),
+        inset 0 0 6px rgba(255,255,255,0.32);
+      animation: coatingShimmer 2.5s ease-in-out infinite;
+      z-index: 5;
+    }
+    @keyframes coatingShimmer {
+      0%, 100% {
+        opacity: 0.88;
+        box-shadow:
+          0 0  8px rgba(195,155,211,0.72),
+          0 0 14px rgba(195,155,211,0.30),
+          inset 0 0 5px rgba(255,255,255,0.26);
+      }
+      50% {
+        opacity: 1;
+        box-shadow:
+          0 0 14px rgba(224,182,250,0.95),
+          0 0 22px rgba(195,155,211,0.52),
+          inset 0 0 9px rgba(255,255,255,0.40);
+      }
+    }
+
+    /* ---- Lifebars — position:fixed so touch never blocked by game canvas ---- */
+    #lifebar-container {
+      position: fixed;
+      top: 2vh;
+      left: 2vh;
+      display: flex;
+      flex-direction: column;
+      gap: 1.3vh;
+      z-index: 500;
+    }
+    .lifebar {
+      width: 20vw;
+      height: max(2.5vh, 14px);
+      background-color: #444;
+      border-radius: 10px;
+      overflow: hidden;
+      position: relative;
+      cursor: help;
+      transform-origin: left center;
+      transition: transform 0.15s ease;
+    }
+    .lifebar:hover {
+      transform: scale(1.05);
+    }
+    .lifebar-fill {
+      height: 100%;
+      width: 100%;
+      transition: width 0.3s ease, filter 0.15s ease;
+    }
+    .lifebar:hover .lifebar-fill {
+      filter: brightness(1.15);
+    }
+    #lifebar-fill-1 { background-color: #FFD3B6; }
+    #lifebar-fill-2 { background-color: #A8E6CF; }
+    #lifebar-fill-3 { background-color: #FF8B94; }
+    #lifebar-fill-4 { background-color: #64B5F6; }
+    .lifebar-text {
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      display: flex;
+      align-items: center;
+      padding-left: 1.3vh;
+      font-size: clamp(7px, 1.8vh, 18px);
+      font-weight: bold;
+      color: black;
+    }
+
+    /* Coating button flows inside #lifebar-container flex column — naturally sits below lifebars */
+    #apply-coating-button {
+      display: none;
+      width: 100%;
+      padding: 0.65vh 1.3vh;
+      background-color: #C39BD3;
+      color: white;
+      border: none;
+      border-radius: 10px;
+      font-family: 'Press Start 2P', cursive;
+      font-size: clamp(7px, 1.8vh, 18px);
+      cursor: pointer;
+      box-sizing: border-box;
+      transition: background-color 0.15s;
+    }
+    #apply-coating-button:hover { background-color: #a97fc0; }
+
+    /* Patch Repair button — same flow as coating; mortar-tan to match the patch visual */
+    #apply-patch-button {
+      display: none;
+      width: 100%;
+      padding: 0.65vh 1.3vh;
+      margin-top: 0.6vh;
+      background-color: #B8A88F;
+      color: white;
+      border: none;
+      border-radius: 10px;
+      font-family: 'Press Start 2P', cursive;
+      font-size: clamp(7px, 1.8vh, 18px);
+      cursor: pointer;
+      box-sizing: border-box;
+      transition: background-color 0.15s;
+    }
+    #apply-patch-button:hover { background-color: #9e8f76; }
+
+    /* ---- Score & Pause — position:fixed so never blocked ---- */
+    #score-container {
+      position: fixed;
+      top: 3vh;
+      right: 3vh;
+      text-align: right;
+      z-index: 500;
+    }
+    #score {
+      font-size: clamp(10px, 2.5vh, 24px);
+      color: white;
+      font-weight: bold;
+      display: block;
+    }
+    @keyframes scoreFlash {
+      0%   { color: white;  transform: scale(1);    }
+      40%  { color: #00aaff; transform: scale(1.12); }
+      100% { color: white;  transform: scale(1);    }
+    }
+    #score.flash { animation: scoreFlash 0.25s ease-out; }
+
+    /* Flex row holding Pause + Restart side by side */
+    #score-buttons {
+      display: flex;
+      flex-direction: row;
+      gap: 0.6vh;
+      margin-top: 0.8vh;
+      justify-content: flex-end;
+      align-items: center;
+    }
+
+    #pause-button {
+      padding: 1.3vh 2.6vh;
+      font-size: clamp(7px, 1.5vh, 14px);
+      background-color: #A8E6CF;
+      border: none;
+      border-radius: 5px;
+      font-family: 'Press Start 2P', cursive;
+      cursor: pointer;
+      color: black;
+    }
+    #pause-button:hover { background-color: #7dd6b4; }
+
+    /* ---- In-game Restart — icon-only square, fixed size so it never shrinks ---- */
+    @keyframes buttonPop {
+      0%   { transform: scale(1);    }
+      40%  { transform: scale(1.15); }
+      100% { transform: scale(1);    }
+    }
+    #in-game-restart {
+      display: none;
+      width: max(4vh, 20px);
+      height: max(4vh, 20px);
+      padding: 0;
+      font-size: clamp(11px, 2.2vh, 22px);
+      background-color: rgba(255, 255, 255, 0.12);
+      border: none;
+      border-radius: 5px;
+      font-family: 'Press Start 2P', cursive;
+      cursor: pointer;
+      color: white;
+      transition: background-color 0.2s;
+      flex-shrink: 0;
+      align-items: center;
+      justify-content: center;
+    }
+    #in-game-restart.pop                 { animation: buttonPop 0.2s ease-out; }
+    #in-game-restart:hover:not(.confirm) { background-color: rgba(255, 255, 255, 0.25); }
+    #in-game-restart.confirm             { background-color: #FF8B94; }
+
+    /* ---- Racquet ---- */
+    #racquet {
+      position: absolute;
+      bottom: 7.5vh;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 6.6vw;
+      height: 1.275vh;
+      background-color: white;
+      border-radius: 5px;
+      transition: background-color 0.1s;
+    }
+
+    /* ---- Falling Shapes ---- */
+    .square {
+      position: absolute;
+      width: max(2.5vh, 14px);
+      height: max(2.5vh, 14px);
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: clamp(5px, 1vh, 12px);
+      font-weight: bold;
+      color: black;
+      z-index: 1000;
+    }
+    .square.circle  { border-radius: 50%; }
+    .square.diamond {
+      width: max(2.3vh, 13px);
+      height: max(2.3vh, 13px);
+      border-radius: 2px;
+      transform: rotate(45deg);
+    }
+    .square.diamond .shape-label { display: block; transform: rotate(-45deg); }
+    /* Nudge CO₂ label down 2px — the ₂ descender shifts visual centre upward */
+    .square[data-type="CO₂"] .shape-label { padding-top: 2px; }
+    .square.drop {
+      clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+      border-radius: 10px;
+    }
+
+    /* ---- Shape visuals by data-type ---- */
+
+    /* CO2 — yellow carbonation gas bubble */
+    .square[data-type="CO₂"] {
+      background: radial-gradient(ellipse at 38% 30%,
+        rgba(255,255,230,0.96) 0%,
+        rgba(255,240,120,0.88) 35%,
+        rgba(255,220,55,0.82)  65%,
+        rgba(195,160,12,0.72)  100%
+      );
+      border: 1px solid rgba(210,180,20,0.50);
+      box-shadow:
+        inset 0 0 6px rgba(255,255,200,0.72),
+        0 0 7px rgba(210,180,20,0.38);
+      color: rgba(75,55,0,0.90);
+      text-shadow: 0 0 3px rgba(255,255,200,0.90);
+    }
+
+    /* CL — corrosive liquid chloride */
+    .square[data-type="CL"] {
+      background: radial-gradient(ellipse at 40% 28%,
+        rgba(255,255,255,0.88) 0%,
+        rgba(138,235,202,0.90) 26%,
+        rgba(48,182,132,0.95)  58%,
+        rgba(16,108,72,1)      100%
+      );
+      filter: drop-shadow(0 0 5px rgba(38,158,108,0.74));
+      color: rgba(255,255,255,0.95);
+      text-shadow: 0 1px 3px rgba(0,55,30,0.88);
+    }
+
+    /* SO — sulfate mineral / acid crystal */
+    .square[data-type="SO"] {
+      background: radial-gradient(ellipse at 38% 30%,
+        rgba(255,252,192,0.96) 0%,
+        rgba(255,148,102,0.92) 28%,
+        rgba(225,62,62,0.95)   60%,
+        rgba(150,22,32,1)      100%
+      );
+      box-shadow:
+        0 0 7px rgba(218,68,58,0.54),
+        inset 0 0 4px rgba(255,218,158,0.34);
+      color: rgba(255,248,210,0.95);
+      text-shadow: 0 1px 3px rgba(95,0,8,0.80);
+    }
+
+    /* FT — ice / freeze-thaw crystal (no glow — rotated square is visible enough) */
+    .square[data-type="FT"] {
+      background: radial-gradient(ellipse at 34% 28%,
+        rgba(255,255,255,0.98) 0%,
+        rgba(202,230,255,0.93) 26%,
+        rgba(100,181,246,0.90) 56%,
+        rgba(20,92,198,0.96)   100%
+      );
+      color: rgba(255,255,255,0.95);
+      text-shadow: 0 1px 3px rgba(8,55,148,0.84);
+    }
+
+    /* H₂O — intentionally identical gradient to FT but circle (like SO) to confuse */
+    .square[data-type="H₂O"] {
+      background: radial-gradient(ellipse at 34% 28%,
+        rgba(255,255,255,0.98) 0%,
+        rgba(202,230,255,0.93) 26%,
+        rgba(100,181,246,0.90) 56%,
+        rgba(20,92,198,0.96)   100%
+      );
+      color: rgba(255,255,255,0.95);
+      text-shadow: 0 1px 3px rgba(8,55,148,0.84);
+    }
+
+    /* H₂O speed-boost countdown — fixed bottom-right, just a number, FT blue */
+    #h2o-timer {
+      display: none;
+      position: fixed;
+      bottom: 7.2vh;
+      right: 3vh;
+      font-size: clamp(10px, 2.5vh, 22px);
+      color: #64B5F6;
+      z-index: 500;
+    }
+
+    /* ---- Concrete crack SVG — appears from 75% corrosion, driven by --crack-level ---- */
+    #wall-cracks {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 2;
+    }
+    #wall-cracks path {
+      fill: none;
+      stroke: rgba(12, 8, 4, 0.92);
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      vector-effect: non-scaling-stroke;
+      stroke-width: 0;   /* JS sets per-path weight via path.style in updateBarColor() */
+      opacity: 0;
+      transition: stroke-width 0.8s ease, opacity 0.8s ease;
+    }
+
+    /* ---- Setup Modal ---- */
+    #modal {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background-color: rgba(0, 0, 0, 0.88);
+      padding: 3.7vh;
+      border-radius: 10px;
+      width: min(52vw, 92vw);
+      max-height: 90vh;
+      color: white;
+      display: none;
+      text-align: center;
+      z-index: 9999;
+      overflow-y: auto;
+    }
+    #modal h1        { font-size: clamp(12px, 3.5vh, 32px); }
+    #modal h2        { margin-bottom: 2.6vh; }
+    .option          { margin-bottom: 2vh; }
+    .option h3       { font-size: clamp(9px, 2.5vh, 22px); margin-bottom: 1.3vh; }
+    .button-container {
+      display: flex;
+      justify-content: space-between;
+      gap: 1.3vh;
+      flex-wrap: wrap;
+    }
+    .option button {
+      padding: 1.3vh 2.6vh;
+      margin: 0.65vh;
+      font-family: 'Press Start 2P', cursive;
+      background-color: rgba(255, 255, 255, 0.05);
+      color: white;
+      border: none;
+      cursor: pointer;
+      flex: 1 1 30%;
+      max-width: 17vw;
+      border-radius: 5px;
+      font-size: clamp(7px, 1.5vh, 14px);
+      transition: background-color 0.15s;
+    }
+    .option button:hover    { background-color: rgba(0, 170, 255, 0.4); }
+    .option button.selected { background-color: #00aaff; }
+    .budget    { margin-top: 2.6vh; font-size: clamp(10px, 2.5vh, 22px); }
+    #start-button {
+      margin-top: 2.5vh;
+      background-color: #00aaff;
+      border-radius: 5px;
+      padding: 1.3vh 2.6vh;
+      border: none;
+      font-size: clamp(9px, 2vh, 18px);
+      font-family: 'Press Start 2P', cursive;
+      color: white;
+      cursor: pointer;
+    }
+    #start-button:not(:disabled):hover { background-color: #0088cc; }
+    #start-button:disabled             { background-color: #555; cursor: not-allowed; }
+
+    /* ---- Tooltips ---- */
+    #tooltip {
+      position: fixed;
+      background-color: rgba(0, 0, 0, 0.85);
+      color: white;
+      padding: 0.65vh 1.3vh;
+      border-radius: 5px;
+      font-size: clamp(7px, 1.4vh, 13px);
+      display: none;
+      z-index: 10000;
+      pointer-events: none;
+      max-width: 25vw;
+    }
+    .cost-button { position: relative; }
+    .cost-tooltip {
+      position: absolute;
+      background-color: rgba(0, 0, 0, 0.85);
+      color: white;
+      padding: 0.4vh 0.8vh;
+      border-radius: 4px;
+      font-size: clamp(6px, 1.3vh, 12px);
+      display: none;
+      z-index: 10001;
+      pointer-events: none;
+      bottom: 120%;
+      left: 50%;
+      transform: translateX(-50%);
+      white-space: nowrap;
+    }
+    .cost-button:hover .cost-tooltip { display: block; }
+
+    /* ---- Pause Indicator ---- */
+    #pause-indicator {
+      font-size: 6.5vh;
+      color: white;
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      display: none;
+      z-index: 10000;
+      text-shadow: 0 0 20px rgba(255, 255, 255, 0.4);
+    }
+
+    /* ---- Game Over Modal ---- */
+    #game-over-modal {
+      display: none;
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background-color: rgba(0, 0, 0, 0.88);
+      padding: 3.9vh;
+      border-radius: 10px;
+      width: min(30vw, 86vw);
+      color: white;
+      text-align: center;
+      z-index: 10001;
+    }
+    #game-over-modal h1 { font-size: clamp(11px, 2.8vh, 26px); margin-bottom: 2.6vh; }
+    #game-over-modal p  { font-size: clamp(10px, 2.4vh, 22px); margin-bottom: 1.4vh; }
+    #hi-score-line      { font-size: clamp(8px, 1.7vh, 16px); color: #A8E6CF; margin-bottom: 2.6vh; }
+    #restart-button {
+      padding: 1.3vh 2.6vh;
+      font-family: 'Press Start 2P', cursive;
+      background-color: #00aaff;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: clamp(9px, 2vh, 18px);
+      width: 100%;
+      margin-bottom: 1.2vh;
+    }
+    #restart-button:hover   { background-color: #0088cc; }
+    #screenshot-button {
+      padding: 1.3vh 2.6vh;
+      font-family: 'Press Start 2P', cursive;
+      background-color: #FF8B94;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: clamp(9px, 2vh, 18px);
+      width: 100%;
+    }
+    #screenshot-button:hover { background-color: #E07A83; }
+
+    /* ---- Wall-impact educational messages ---- */
+    .wall-message {
+      position: fixed;
+      font-family: 'Press Start 2P', cursive;
+      font-size: clamp(10px, 1.8vh, 18px);
+      line-height: 1.7;
+      max-width: 34vw;
+      pointer-events: none;
+      z-index: 600;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+      text-shadow:
+        0 0 8px  rgba(0,0,0,0.95),
+        1px  1px 0 rgba(0,0,0,0.85),
+       -1px -1px 0 rgba(0,0,0,0.85);
+    }
+
+    /* ---- Mobile touch hint (fades out after a few seconds) ---- */
+    #touch-hint {
+      display: none;
+      position: fixed;
+      bottom: 9vh;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: clamp(5px, 1vh, 10px);
+      color: rgba(255, 255, 255, 0.28);
+      white-space: nowrap;
+      z-index: 50;
+      pointer-events: none;
+      transition: opacity 1.5s;
+    }
+
+    /* ---- Landscape Overlay ---- */
+    #landscape-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background-color: rgba(0, 0, 0, 0.96);
+      z-index: 99999;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      gap: 2vh;
+    }
+    #landscape-overlay .rotate-icon { font-size: 7vh; }
+    #landscape-overlay p {
+      font-size: clamp(12px, 2.5vh, 24px);
+      line-height: 2;
+      margin: 0;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Global info tooltip -->
+  <div id="tooltip"></div>
+
+  <!-- Setup Modal -->
+  <div id="modal">
+    <h1>SELECT CONCRETE PROPERTIES</h1>
+    <div id="reinforcement-cover" class="option">
+      <h3><span class="tooltip-trigger" data-tooltip="Choose adequate concrete cover to keep reinforcement away from threats">COVER TO REINFORCEMENT</span></h3>
+      <div class="button-container">
+        <button class="cost-button" data-category="reinforcementCover" data-value="a30" data-cost="80">30mm<span class="cost-tooltip">$80</span></button>
+        <button class="cost-button" data-category="reinforcementCover" data-value="b50" data-cost="170">50mm<span class="cost-tooltip">$170</span></button>
+        <button class="cost-button" data-category="reinforcementCover" data-value="c70" data-cost="260">70mm<span class="cost-tooltip">$260</span></button>
+      </div>
+    </div>
+    <div id="concrete-curing" class="option">
+      <h3><span class="tooltip-trigger" data-tooltip="Curing enhances concrete durability by reducing permeability">CONCRETE CURING</span></h3>
+      <div class="button-container">
+        <button class="cost-button" data-category="concreteCuring" data-value="dcompound" data-cost="80">Membrane<span class="cost-tooltip">$80</span></button>
+        <button class="cost-button" data-category="concreteCuring" data-value="e3day"     data-cost="170">3-day Wet<span class="cost-tooltip">$170</span></button>
+        <button class="cost-button" data-category="concreteCuring" data-value="f7day"     data-cost="260">7-day Wet<span class="cost-tooltip">$260</span></button>
+      </div>
+    </div>
+    <div id="concrete-mix" class="option">
+      <h3><span class="tooltip-trigger" data-tooltip="Determines strength and resistance to deterioration">CONCRETE MIX</span></h3>
+      <div class="button-container">
+        <button class="cost-button" data-category="concreteMix" data-value="gnormal" data-cost="80">Normal<span class="cost-tooltip">$80</span></button>
+        <button class="cost-button" data-category="concreteMix" data-value="hhigh"   data-cost="170">High Strength<span class="cost-tooltip">$170</span></button>
+        <button class="cost-button" data-category="concreteMix" data-value="iscms"   data-cost="260">High + SCMs<span class="cost-tooltip">$260</span></button>
+      </div>
+    </div>
+    <div id="air-content" class="option">
+      <h3><span class="tooltip-trigger" data-tooltip="Improves freeze-thaw resistance but can reduce strength and other properties">AIR CONTENT</span></h3>
+      <div class="button-container">
+        <button class="cost-button" data-category="airContent" data-value="j2" data-cost="80">2%<span class="cost-tooltip">$80</span></button>
+        <button class="cost-button" data-category="airContent" data-value="k5" data-cost="170">5%<span class="cost-tooltip">$170</span></button>
+        <button class="cost-button" data-category="airContent" data-value="l8" data-cost="260">8%<span class="cost-tooltip">$260</span></button>
+      </div>
+    </div>
+    <div id="remaining-budget" class="budget">Budget Left: $500</div>
+    <button id="start-button" disabled>START GAME</button>
+  </div>
+
+  <!-- Game Canvas (only wall, coating line, racquet, and dynamic shapes live here) -->
+  <div id="game-container">
+    <div id="game-name">DURABILITY</div>
+    <div id="wall">
+      <canvas id="rebar-canvas"></canvas>
+      <!-- Repair mortar patches — 4 fixed, uneven positions; shown one-by-one on Patch Repair.
+           z-index 2, placed BEFORE cracks so cracks render over them; both under rebar. -->
+      <div id="wall-patches">
+        <div class="patch" style="left: 6%;  width: 13%;"></div>
+        <div class="patch" style="left: 31%; width: 11%;"></div>
+        <div class="patch" style="left: 58%; width: 14%;"></div>
+        <div class="patch" style="left: 81%; width: 12%;"></div>
+      </div>
+      <!-- 5 cracks, approved in demo, each with distinct character -->
+      <svg id="wall-cracks" viewBox="0 0 1000 100" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+        <path class="c1" d="M 148 0 L 144 18 L 150 42 L 140 65 L 132 100"/>
+        <path class="c2" d="M 298 0 L 302 30 L 295 55 L 318 78 L 335 100"/>
+        <path class="c3" d="M 448 0 L 458 30 L 453 58 L 462 80 L 468 100"/>
+        <path class="c4" d="M 768 0 L 758 25 L 762 52 L 750 76 L 746 100"/>
+        <path class="c5" d="M 905 0 L 910 25 L 902 52 L 912 76 L 918 100"/>
+      </svg>
+    </div>
+    <div id="coating-line"></div>
+  <div id="h2o-timer"></div>
+    <div id="racquet"></div>
+  </div>
+
+  <!-- UI panels: fixed + z-index:500 so touch events always reach them -->
+  <div id="lifebar-container">
+    <div class="lifebar tooltip-trigger" data-tooltip="Slowly weakens concrete by reacting with CO₂ in the air">
+      <div class="lifebar-fill" id="lifebar-fill-1"></div>
+      <div class="lifebar-text">CARBONATION</div>
+    </div>
+    <div class="lifebar tooltip-trigger" data-tooltip="Penetrate concrete and cause rust in steel reinforcement">
+      <div class="lifebar-fill" id="lifebar-fill-2"></div>
+      <div class="lifebar-text">CHLORIDES</div>
+    </div>
+    <div class="lifebar tooltip-trigger" data-tooltip="Attack concrete components, breaking it down over time">
+      <div class="lifebar-fill" id="lifebar-fill-3"></div>
+      <div class="lifebar-text">SULFATES</div>
+    </div>
+    <div class="lifebar tooltip-trigger" data-tooltip="Freeze-thaw cycles create cracks by expanding trapped water when it freezes">
+      <div class="lifebar-fill" id="lifebar-fill-4"></div>
+      <div class="lifebar-text">FREEZE THAW</div>
+    </div>
+    <button id="apply-coating-button" class="tooltip-trigger" data-tooltip="Coating boosts all lifebars — costs 20 points">APPLY COATING [A]</button>
+    <button id="apply-patch-button" class="tooltip-trigger" data-tooltip="Patch repair boosts all lifebars — costs 20 points">PATCH REPAIR [R]</button>
+  </div>
+
+  <div id="score-container">
+    <span id="score">SCORE: 0</span>
+    <div id="score-buttons">
+      <button id="pause-button">P PAUSE</button>
+      <button id="in-game-restart" class="tooltip-trigger" data-tooltip="PRESS TWICE TO RESTART">↺</button>
+    </div>
+  </div>
+
+  <div id="pause-indicator">PAUSED</div>
+  <!-- Hint fades out after a few seconds on mobile -->
+  <div id="touch-hint">← TAP TO MOVE →  ·  DOUBLE-TAP TO PAUSE</div>
+
+  <!-- Game Over Modal -->
+  <div id="game-over-modal">
+    <h1 id="game-over-phrase">GAME OVER!</h1>
+    <p>YOUR SCORE: <span id="final-score">0</span></p>
+    <p id="hi-score-line">BEST: <span id="hi-score-display">0</span></p>
+    <button id="restart-button">RESTART GAME</button>
+    <button id="screenshot-button">SCREENSHOT TO SHARE</button>
+    <a id="download-link" style="display:none"></a>
+  </div>
+
+  <!-- Landscape Overlay -->
+  <div id="landscape-overlay">
+    <div class="rotate-icon">⟳</div>
+    <p>PLEASE ROTATE YOUR<br>DEVICE TO LANDSCAPE</p>
+  </div>
+
+  <script>
+    /* ================================================================
+       DOM REFS
+    ================================================================ */
+    const modal           = document.getElementById('modal');
+    const startButton     = document.getElementById('start-button');
+    const remainingBudget = document.getElementById('remaining-budget');
+    const gameContainer   = document.getElementById('game-container');
+    const racquet         = document.getElementById('racquet');
+    const wall            = document.getElementById('wall');
+    const scoreEl         = document.getElementById('score');
+    const coatingLine     = document.getElementById('coating-line');
+    const pauseIndicator  = document.getElementById('pause-indicator');
+    const applyCoatingBtn = document.getElementById('apply-coating-button');
+    const applyPatchBtn   = document.getElementById('apply-patch-button');
+    const wallPatches     = document.getElementById('wall-patches');
+    const h2oTimerEl      = document.getElementById('h2o-timer');
+    const gameOverModal   = document.getElementById('game-over-modal');
+    const gameOverPhrase  = document.getElementById('game-over-phrase');
+    const finalScoreEl    = document.getElementById('final-score');
+    const hiScoreDisplay  = document.getElementById('hi-score-display');
+    const touchHint       = document.getElementById('touch-hint');
+    const inGameRestartBtn = document.getElementById('in-game-restart');
+
+    const lifebars = [
+      { fill: document.getElementById('lifebar-fill-1'), life: 50 },
+      { fill: document.getElementById('lifebar-fill-2'), life: 50 },
+      { fill: document.getElementById('lifebar-fill-3'), life: 50 },
+      { fill: document.getElementById('lifebar-fill-4'), life: 50 },
+    ];
+
+    /* ================================================================
+       CONSTANTS & DEVICE DETECTION
+    ================================================================ */
+    const BUDGET           = 500;
+    const COATING_DURATION = 100000;
+    const COATING_FADE     = 10000;   // ms — coating fades out over this duration after COATING_DURATION
+    const COATING_BOOST    = 12.5;    // life points added to each bar by coating
+    const COATING_COST     = 20;      // score points spent to apply coating
+    const PATCH_BOOST      = 12.5;    // life points added to each bar by patch repair (one extra hit)
+    const PATCH_COST       = 20;      // score points spent to apply patch repair
+    const PATCH_UNLOCK     = 200;     // score at which patch repair becomes available
+    const PATCH_STAGGER    = 500;     // ms between each patch fading in
+    const H2O_BOOST_DURATION = 10000; // ms — speed boost duration on catching H₂O
+    const H2O_BOOST_FACTOR   = 2;     // racquet speed multiplier
+    const H2O_MESSAGES = [
+      "Water never hurts",
+      "Slippery when wet",
+      "Rainwater — no concern",
+      "Is rain coming?",
+      "Just a splash",
+      "Clouds rolling in",
+      "Bring an umbrella",
+      "A damp day on site",
+    ];
+    const MIN_FALL_SPEED   = 800;
+    const DAMAGE_PER_HIT   = 12.5;    // life lost when a particle reaches the wall
+    const START_LIFE       = 50;      // default lifebar value before property adjustments
+    const CRACK_THRESHOLD  = 0.33;    // fraction of min-bar damage before cracks begin
+    const FRAME_BASELINE   = 20;      // ms — reference frame step (matches legacy 20ms cadence)
+    const MAX_FRAME_DELTA  = 60;      // ms — delta clamp so particles never teleport after a stall
+
+    // Touch devices get a lower fall ratio: same wall-crossing time but
+    // feels more manageable given touch latency vs keyboard precision.
+    const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    const FALL_RATIO    = isTouchDevice ? 0.004 : 0.004;
+
+    let FALL_STEP    = window.innerHeight * FALL_RATIO;
+
+    const SHAPES = [
+      { color: '#FFE566', label: 'CO₂', barIndex: 0, shape: 'square'  },
+      { color: '#A8E6CF', label: 'CL',  barIndex: 1, shape: 'drop'    },
+      { color: '#FF8B94', label: 'SO',  barIndex: 2, shape: 'circle'  },
+      { color: '#64B5F6', label: 'FT',  barIndex: 3, shape: 'diamond' },
+    ];
+
+    const MESSAGES = {
+      'CO₂': [
+        "I'm losing my alkalinity",
+        "The air is against me",
+        "My pH just dropped",
+        "That's not fresh air",
+        "The atmosphere is winning",
+        "Bad air day",
+        "Who invited the carbon?",
+        "My chemistry is changing",
+      ],
+      'CL': [
+        "Feeling salty",
+        "That's a lot of salt",
+        "The sea sends regards",
+        "Salt in the wound",
+        "My steel won't like this",
+        "Too salty for me",
+        "Salt attack!",
+        "Rust never sleeps",
+      ],
+      'SO': [
+        "Another sulfate strike",
+        "My matrix is dissolving",
+        "Chemistry gone wrong",
+        "I don't react well",
+        "Things are breaking down",
+        "That's a hostile environment",
+        "This is why we test soils",
+        "Durability has left the chat",
+      ],
+      'FT': [
+        "Ice to meet you",
+        "That got into my pores",
+        "Winter strikes again",
+        "I felt that one",
+        "Tiny crack. Big problem",
+        "This is snow joke",
+        "I've seen better winters",
+        "That one left a crack",
+      ],
+    };
+
+    const GAME_OVER_PHRASES = [
+      'CONCRETE CRUMBLED!',
+      'CORROSION:1, CONCRETE:0!',
+      'TIME TO TRY A DIFFERENT MIX!',
+      'TIME TO REBUILD!',
+      'OOPS, CORROSION CAUGHT US!',
+    ];
+
+    const BUDGET_JOKES = [
+      "Saving for the sequel?",
+      "Remaining budget: undeployed",
+      "Economical engineering",
+    ];
+
+    // Fixed messages at specific score milestones
+    const SCORE_MESSAGES = {
+       10: "Don't relax — it gets faster",
+       25: "Keep that racquet moving",
+       50: "Halfway to coating power!",
+      100: "Coating unlocked — your concrete deserves it",
+      150: "Either you're good or the concrete is",
+      200: "Seriously impressive. Or very lucky.",
+      300: "You've outlasted most structures in Rome",
+      325: "No time to read these — focus!",
+    };
+    // Scores that get a random phrase instead of a fixed one
+    const SCORE_RANDOM_MILESTONES = new Set([75, 125, 175, 225, 250, 275]);
+    const SCORE_RANDOM_PHRASES = [
+      "Your concrete is holding strong",
+      "Consistency is key in durability",
+      "pH still stable — good work",
+      "Rebar still intact",
+      "The corrosives are getting creative",
+      "They never stop, do they",
+      "Corrosion never takes a day off",
+    ];
+
+    const LIFEBAR_ADJUSTMENTS = {
+      'c70dcompoundgnormalj2': { CO2: +50,   CL:  0,    SO:   0,   FT:  0    },
+      'a30f7daygnormalj2':     { CO2: +12.5, CL: +25,   SO: +12.5, FT:  0    },
+      'a30dcompoundiscmsj2':   { CO2:  0,    CL: +12.5, SO: +25,   FT:  0    },
+      'a30dcompoundgnormall8': { CO2:  0,    CL: -12.5, SO: -12.5, FT: +50   },
+      'b50e3daygnormalj2':     { CO2: +25,   CL: +12.5, SO: +12.5, FT: +12.5 },
+      'a30e3dayhhighj2':       { CO2:  0,    CL: +25,   SO: +12.5, FT: +12.5 },
+      'a30dcompoundhhighk5':   { CO2:  0,    CL:  0,    SO:   0,   FT: +25   },
+      'b50dcompoundgnormalk5': { CO2: +12.5, CL:  0,    SO:   0,   FT: +25   },
+      'b50dcompoundhhighj2':   { CO2: +25,   CL: +12.5, SO: +12.5, FT:  0    },
+      'a30e3daygnormalk5':     { CO2:  0,    CL: +12.5, SO:  0,    FT: +37.5 },
+      'b50dcompoundgnormalj2': { CO2: +25,   CL:  0,    SO:   0,   FT:  0    },
+      'a30e3daygnormalj2':     { CO2:  0,    CL: +12.5, SO:  0,    FT:  0    },
+      'a30dcompoundhhighj2':   { CO2:  0,    CL:  0,    SO: +12.5, FT:  0    },
+      'a30dcompoundgnormalk5': { CO2:  0,    CL:  0,    SO: -12.5, FT: +25   },
+    };
+
+    /* ================================================================
+       STATE
+    ================================================================ */
+    let selectedOptions        = {};
+    let totalCost              = 0;
+    let score                  = 0;
+    let hiScore                = (() => { try { return parseInt(localStorage.getItem('durabilityHiScore') || '0', 10); } catch (e) { return 0; } })();
+    let racquetLeft            = window.innerWidth / 2;
+    const RACQUET_SPEED_BASE   = () => window.innerWidth * 0.01;
+    let racquetSpeed           = window.innerWidth * 0.01;  // `let` — updated on resize
+    let gameInterval           = null;
+    let speedInterval          = null;
+    let isCoatingApplied       = false;
+    let coatingAppliedThisGame = false;
+    let patchAppliedThisGame   = false;
+    let isPaused               = false;
+    let gameEnded              = false;
+    let gameStarted            = false;     // true once startGame() has been called
+    let autoPaused             = false;     // true when portrait rotation triggered the pause
+    let wasPortrait            = window.innerHeight > window.innerWidth; // tracks last orientation
+    let shownMilestones        = new Set(); // prevents milestone messages re-firing after coating deducts score
+    let coatingTimeout         = null;
+    let coatingFadeTimeout     = null;   // second timeout for the 10s fade cleanup
+    let coatingInFadePhase     = false;  // true once the 10s opacity fade has started
+    let protectedHitCount      = 0;      // counts wall hits while coating solid; odd hits (#1,#3,…) absorbed
+    let isSpeedBoosted         = false;  // true during H₂O racquet speed boost
+    let h2oSpeedTimeout        = null;   // clears the speed boost after 10s
+    let h2oTimerInterval       = null;   // drives the countdown display
+    let h2oBoostStart          = 0;      // Date.now() when current boost segment started
+    let h2oBoostRemaining      = 0;      // ms left in the boost (tracked across pause)
+    let coatingFadeElapsed     = 0;      // ms of fade already completed before a pause
+    let coatingStartTime       = 0;
+    let coatingRemainingTime   = COATING_DURATION;
+    let currentCorrosionLevel  = 0;   // shared between updateBarColor → renderRebar
+    let particles              = [];  // active falling particles, driven by the rAF gameLoop
+    let lastFrame              = 0;   // timestamp of previous rAF frame (for delta-time stepping)
+    const crackPaths           = document.querySelectorAll('#wall-cracks path'); // cached — never changes
+
+    /* ================================================================
+       ORIENTATION & RESIZE
+    ================================================================ */
+    const landscapeOverlay = document.getElementById('landscape-overlay');
+
+    function checkOrientation() {
+      const isPortrait = window.innerHeight > window.innerWidth;
+      landscapeOverlay.style.display = isPortrait ? 'flex' : 'none';
+
+      if (gameStarted && !gameEnded) {
+        if (isPortrait && !wasPortrait && !isPaused) {
+          // Rotated to portrait while game running → auto-pause
+          togglePause();
+          autoPaused = true;
+        } else if (!isPortrait && wasPortrait && autoPaused && isPaused) {
+          // Rotated back to landscape after auto-pause → auto-resume
+          togglePause();
+          autoPaused = false;
+        }
+      }
+
+      wasPortrait = isPortrait;
+    }
+
+    let resizeTimer = null;
+    window.addEventListener('resize', () => {
+      // Lightweight updates run immediately so the racquet/particles stay correct mid-drag…
+      FALL_STEP    = window.innerHeight * FALL_RATIO;
+      racquetSpeed = RACQUET_SPEED_BASE() * (isSpeedBoosted ? H2O_BOOST_FACTOR : 1);
+      racquetLeft  = Math.max(window.innerWidth * 0.03,
+                     Math.min(racquetLeft, window.innerWidth * 0.96));
+      updateRealVH();
+      // …but the expensive canvas redraw + orientation check are debounced (mobile URL-bar
+      // show/hide fires many resize events in quick succession).
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        renderRebar();
+        checkOrientation();
+      }, 120);
+    });
+    // Accurate viewport height for mobile — fixes URL-bar mis-sizing on iOS/Android.
+    // Called immediately and on every resize so --real-vh is always current.
+    function updateRealVH() {
+      document.documentElement.style.setProperty('--real-vh', window.innerHeight + 'px');
+    }
+    updateRealVH();
+    checkOrientation();
+
+    // Auto-pause when the tab/app is backgrounded mid-game (and not already paused).
+    // The rAF loop already clamps large deltas, but pausing also freezes the coating timer
+    // and spawn intervals cleanly. We don't auto-resume — the player resumes deliberately.
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden && gameStarted && !gameEnded && !isPaused) {
+        togglePause();
+      }
+    });
+
+    /* ================================================================
+       SETUP MODAL
+    ================================================================ */
+    modal.style.display = 'block';
+    hiScoreDisplay.textContent = hiScore;
+
+    document.querySelectorAll('.option button').forEach(button => {
+      button.addEventListener('click', () => {
+        const category = button.dataset.category;
+        const cost     = parseInt(button.dataset.cost, 10);
+        document.querySelectorAll(`[data-category="${category}"]`).forEach(btn => btn.classList.remove('selected'));
+        button.classList.add('selected');
+        selectedOptions[category] = { value: button.dataset.value, cost };
+        totalCost = Object.values(selectedOptions).reduce((acc, o) => acc + o.cost, 0);
+        remainingBudget.textContent = `Budget Left: $${BUDGET - totalCost}`;
+        startButton.disabled = !(Object.keys(selectedOptions).length === 4 && (BUDGET - totalCost) >= 0);
+        updateLifebars();
+      });
+    });
+
+    startButton.addEventListener('click', () => {
+      modal.style.display = 'none';
+      startGame();
+    });
+
+    /* ================================================================
+       KEYBOARD INPUT
+    ================================================================ */
+    const keysPressed = {};
+
+    document.addEventListener('keydown', e => {
+      keysPressed[e.key] = true;
+      if (!gameStarted || gameEnded) return;   // hotkeys inert outside active play
+      if (e.key.toLowerCase() === 'p') togglePause();
+      if (e.key.toLowerCase() === 'a') applyCoating();
+      if (e.key.toLowerCase() === 'r') applyPatch();
+    });
+    document.addEventListener('keyup', e => { delete keysPressed[e.key]; });
+
+    /* ================================================================
+       TOUCH INPUT — handled directly on the game canvas.
+       UI panels (#score-container, #lifebar-container) are position:fixed
+       with z-index:500, so their touches never reach here.
+
+       Controls:
+         • Left half of screen  → move left
+         • Right half of screen → move right
+         • Two-finger tap        → pause  (unambiguous)
+         • Double-tap (quick)   → pause  (< 180 ms each tap, < 350 ms apart)
+    ================================================================ */
+    let lastTouchEndTime = 0;
+    let touchStartTime   = 0;
+
+    gameContainer.addEventListener('touchstart', e => {
+      // Buttons inside game-container (coating-line etc.) should pass through
+      if (e.target.closest('button')) return;
+      e.preventDefault();
+
+      touchStartTime = Date.now();
+
+      // Two-finger tap = instant pause (clearest gesture)
+      if (e.touches.length === 2) {
+        togglePause();
+        return;
+      }
+
+      const touch = e.touches[0];
+      if (touch.clientX < window.innerWidth / 2) {
+        keysPressed['ArrowLeft']  = true;
+        delete keysPressed['ArrowRight'];
+      } else {
+        keysPressed['ArrowRight'] = true;
+        delete keysPressed['ArrowLeft'];
+      }
+    }, { passive: false });
+
+    gameContainer.addEventListener('touchmove', e => {
+      if (e.target.closest('button')) return;
+      e.preventDefault();
+      if (e.touches.length !== 1) return;
+      const touch = e.touches[0];
+      if (touch.clientX < window.innerWidth / 2) {
+        keysPressed['ArrowLeft']  = true;
+        delete keysPressed['ArrowRight'];
+      } else {
+        keysPressed['ArrowRight'] = true;
+        delete keysPressed['ArrowLeft'];
+      }
+    }, { passive: false });
+
+    gameContainer.addEventListener('touchend', e => {
+      if (e.target.closest('button')) return;
+
+      const now           = Date.now();
+      const touchDuration = now - touchStartTime;
+
+      // Double-tap: each tap must be brief (< 180 ms) and close together (< 350 ms)
+      if (touchDuration < 180 && now - lastTouchEndTime < 250) {
+        togglePause();
+        lastTouchEndTime = 0;  // reset so triple-tap doesn't re-fire
+        delete keysPressed['ArrowLeft'];
+        delete keysPressed['ArrowRight'];
+        return;
+      }
+      // Only start the double-tap window for quick taps, not held movements
+      lastTouchEndTime = (touchDuration < 180) ? now : 0;
+
+      if (e.touches.length === 0) {
+        delete keysPressed['ArrowLeft'];
+        delete keysPressed['ArrowRight'];
+      }
+    }, { passive: false });
+
+    gameContainer.addEventListener('touchcancel', () => {
+      delete keysPressed['ArrowLeft'];
+      delete keysPressed['ArrowRight'];
+    });
+
+    /* ================================================================
+       RACQUET MOVEMENT
+    ================================================================ */
+    function moveRacquet() {
+      if (!isPaused) {
+        if (keysPressed['ArrowLeft']  && racquetLeft > window.innerWidth * 0.03) racquetLeft -= racquetSpeed;
+        if (keysPressed['ArrowRight'] && racquetLeft < window.innerWidth * 0.96) racquetLeft += racquetSpeed;
+        racquet.style.left = `${racquetLeft}px`;
+      }
+      requestAnimationFrame(moveRacquet);
+    }
+    moveRacquet();
+
+    /* ================================================================
+       LIFEBAR HELPERS
+    ================================================================ */
+    function updateLifebars() {
+      const values = { CO2: 50, CL: 50, SO: 50, FT: 50 };
+      const key = Object.keys(selectedOptions).map(c => selectedOptions[c].value).sort().join('');
+      const adj = LIFEBAR_ADJUSTMENTS[key];
+      if (adj) Object.keys(adj).forEach(k => { values[k] += adj[k]; });
+      lifebars[0].life = values.CO2;
+      lifebars[1].life = values.CL;
+      lifebars[2].life = values.SO;
+      lifebars[3].life = values.FT;
+      lifebars.forEach(bar => { bar.fill.style.width = `${bar.life}%`; });
+      updateBarColor();
+    }
+
+    function updateBarColor() {
+      const critical = lifebars.some(bar => bar.life <= DAMAGE_PER_HIT);
+      document.documentElement.style.setProperty('--bar-gradient-color', critical ? '#B56530' : '#555555');
+
+      if (lifebars.some(b => b.startLife !== undefined)) {
+        const totalStart   = lifebars.reduce((sum, b) => sum + b.startLife, 0);
+        const totalCurrent = lifebars.reduce((sum, b) => sum + Math.max(0, b.life), 0);
+        currentCorrosionLevel = Math.max(0, Math.min(1, 1 - totalCurrent / totalStart));
+        document.documentElement.style.setProperty('--corrosion-level', currentCorrosionLevel.toFixed(3));
+        // Cracks driven by the most-damaged bar; appear 2 hits before game end
+        const minLife    = Math.min(...lifebars.map(b => b.life));
+        const minStart   = Math.min(...lifebars.map(b => b.startLife));
+        const crackLevel = Math.max(0, Math.min(1, (1 - minLife / minStart - CRACK_THRESHOLD) / (1 - CRACK_THRESHOLD)));
+        document.documentElement.style.setProperty('--crack-level', crackLevel.toFixed(3));
+        const CRACK_W = [2.5, 3.0, 2.8, 3.5, 2.6];
+        const CRACK_O = [0.88, 0.95, 1.00, 0.92, 0.90];
+        const cl = Math.pow(crackLevel, 1.2);   // gentle ease — barely visible at first hit, prominent at last
+        crackPaths.forEach((p, i) => {
+          p.style.strokeWidth = (cl * CRACK_W[i]).toFixed(2);
+          p.style.opacity     = Math.min(1, cl * CRACK_O[i]).toFixed(3);
+        });
+        renderRebar();
+      }
+    }
+    document.documentElement.style.setProperty('--bar-gradient-color', '#555555');
+
+    /* ================================================================
+       REBAR CANVAS — canvas-rendered rebar with patchy corrosion
+    ================================================================ */
+
+    // Seeded xorshift32 — same seed = same patch positions every call;
+    // only opacity changes, so the rust fades in consistently.
+    function makeRng(seed) {
+      let s = (seed ^ 0xDEADBEEF) >>> 0;
+      return () => { s ^= s << 13; s ^= s >> 17; s ^= s << 5; return (s = s >>> 0) / 4294967296; };
+    }
+
+    function drawRustPatches(ctx, W, H, rust) {
+      if (rust <= 0.02) return;
+      const rng = makeRng(0xCAFE1234);
+
+      function blob(cx, cy, rad, r, g, b, alpha) {
+        if (alpha <= 0.01) return;
+        const gr = ctx.createRadialGradient(cx, cy, 0, cx, cy, rad);
+        gr.addColorStop(0,    `rgba(${r},${g},${b},${Math.min(alpha, 0.98)})`);
+        gr.addColorStop(0.55, `rgba(${r},${g},${b},${Math.min(alpha * 0.42, 0.98)})`);
+        gr.addColorStop(1,    `rgba(${r},${g},${b},0)`);
+        ctx.fillStyle = gr;
+        ctx.fillRect(0, 0, W, H);
+      }
+
+      // Phase 1 — large dark-brown blotches
+      for (let i = 0; i < 18; i++) {
+        blob(rng()*W, rng()*H, (rng()*0.10+0.04)*W,
+          75+Math.round(rng()*35), 28+Math.round(rng()*18), 4+Math.round(rng()*8),
+          (rng()*0.35+0.20)*rust);
+      }
+      // Phase 2 — medium orange-brown patches
+      for (let i = 0; i < 30; i++) {
+        blob(rng()*W, rng()*H, (rng()*0.05+0.012)*W,
+          155+Math.round(rng()*45), 62+Math.round(rng()*28), 8+Math.round(rng()*12),
+          (rng()*0.40+0.15)*rust);
+      }
+      // Phase 3 — vivid orange spots (above rust 0.35)
+      const t3 = Math.max(0, (rust-0.35)/0.65);
+      for (let i = 0; i < 22; i++) {
+        blob(rng()*W, rng()*H, (rng()*0.022+0.006)*W,
+          198+Math.round(rng()*30), 95+Math.round(rng()*35), 15+Math.round(rng()*18),
+          (rng()*0.45+0.20)*t3);
+      }
+      // Phase 4 — dark corrosion pits (above rust 0.55)
+      const t4 = Math.max(0, (rust-0.55)/0.45);
+      for (let i = 0; i < 38; i++) {
+        blob(rng()*W, rng()*H, (rng()*0.008+0.002)*W, 15, 5, 1,
+          (rng()*0.55+0.30)*t4);
+      }
+    }
+
+    function drawRebar(ctx, W, H, rust) {
+      ctx.clearRect(0, 0, W, H);
+      const lerp = (a, b, t) => a + (b - a) * t;
+      const br   = rust * 0.55;  // base tint capped at 55% — patches fill the rest
+      const sc  = (sr,sg,sb, rr,rg,rb)   => `rgb(${Math.round(lerp(sr,rr,br))},${Math.round(lerp(sg,rg,br))},${Math.round(lerp(sb,rb,br))})`;
+      const sca = (sr,sg,sb, rr,rg,rb,a) => `rgba(${Math.round(lerp(sr,rr,br))},${Math.round(lerp(sg,rg,br))},${Math.round(lerp(sb,rb,br))},${a})`;
+
+      // Cylindrical body — peak specular at 42% (light from upper-left)
+      const body = ctx.createLinearGradient(0, 0, 0, H);
+      body.addColorStop(0.00, sc(  5,  5,  5,  35, 10,  2));
+      body.addColorStop(0.08, sc( 16, 16, 16,  52, 18,  4));
+      body.addColorStop(0.22, sc( 62, 62, 62, 110, 42,  8));
+      body.addColorStop(0.36, sc(128,128,128, 165, 80, 18));
+      body.addColorStop(0.42, sc(195,195,195, 210,118, 30));
+      body.addColorStop(0.50, sc(175,175,175, 192,105, 24));
+      body.addColorStop(0.60, sc(118,118,118, 155, 72, 14));
+      body.addColorStop(0.75, sc( 58, 58, 58, 105, 40,  7));
+      body.addColorStop(0.90, sc( 18, 18, 18,  50, 14,  3));
+      body.addColorStop(1.00, sc(  4,  4,  4,  28,  8,  1));
+      ctx.fillStyle = body;
+      ctx.fillRect(0, 0, W, H);
+
+      // Transverse deformation ribs at 55°, bottom-left → top-right
+      const ribOffset  = H / Math.tan(55 * Math.PI / 180);
+      const ribSpacing = Math.max(H * 0.90, 12);
+      const shadowW    = Math.max(H * 0.050, 1.0);
+      const faceW      = Math.max(H * 0.075, 1.5);
+      const trailW     = Math.max(H * 0.040, 0.8);
+
+      const ribFace = () => {
+        const g = ctx.createLinearGradient(0, 0, 0, H);
+        g.addColorStop(0.00, sca( 85, 85, 85, 100, 38,  5, 0.72));
+        g.addColorStop(0.30, sca(215,215,215, 225,135, 35, 0.90));
+        g.addColorStop(0.42, sca(248,248,248, 242,158, 48, 0.92));
+        g.addColorStop(0.55, sca(222,222,222, 218,128, 32, 0.88));
+        g.addColorStop(0.75, sca(145,145,145, 168, 85, 16, 0.80));
+        g.addColorStop(1.00, sca( 65, 65, 65,  90, 30,  4, 0.65));
+        return g;
+      };
+
+      for (let xb = -(ribOffset+ribSpacing*2); xb < W+ribOffset+ribSpacing; xb += ribSpacing) {
+        const xt = xb + ribOffset;
+        ctx.beginPath(); ctx.moveTo(xb-shadowW,H); ctx.lineTo(xb,H); ctx.lineTo(xt,0); ctx.lineTo(xt-shadowW,0);
+        ctx.closePath(); ctx.fillStyle = 'rgba(0,0,0,0.72)'; ctx.fill();
+
+        ctx.beginPath(); ctx.moveTo(xb,H); ctx.lineTo(xb+faceW,H); ctx.lineTo(xt+faceW,0); ctx.lineTo(xt,0);
+        ctx.closePath(); ctx.fillStyle = ribFace(); ctx.fill();
+
+        ctx.beginPath(); ctx.moveTo(xb+faceW,H); ctx.lineTo(xb+faceW+trailW,H); ctx.lineTo(xt+faceW+trailW,0); ctx.lineTo(xt+faceW,0);
+        ctx.closePath(); ctx.fillStyle = 'rgba(0,0,0,0.52)'; ctx.fill();
+      }
+
+      // Subtle top-edge ambient catch
+      if (H >= 12) {
+        const te = ctx.createLinearGradient(0, 0, 0, H * 0.06);
+        te.addColorStop(0, sca(88,88,88, 95,38,8, 0.35));
+        te.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = te; ctx.fillRect(0, 0, W, H * 0.06);
+      }
+
+      drawRustPatches(ctx, W, H, rust);
+    }
+
+    function renderRebar() {
+      const canvas = document.getElementById('rebar-canvas');
+      if (!canvas) return;
+      const dpr = window.devicePixelRatio || 1;
+      const W   = Math.round(window.innerWidth  * dpr);
+      const H   = Math.max(Math.round(window.innerHeight * 0.0126 * dpr), 4);
+      canvas.width  = W;
+      canvas.height = H;
+      drawRebar(canvas.getContext('2d'), W, H, currentCorrosionLevel);
+    }
+
+    /* ================================================================
+       GAME LOOP
+    ================================================================ */
+    function getFallSpeed(s) {
+      if (s < 60)  return 2000;
+      if (s < 120) return 1500;
+      if (s < 180) return 1200;
+      if (s < 300) return 1000;
+      return MIN_FALL_SPEED;
+    }
+
+    function startGame() {
+      score = 0;
+      gameEnded = false;
+      gameStarted = true;
+      autoPaused = false;
+      shownMilestones = new Set();
+      coatingAppliedThisGame = false;
+      isCoatingApplied = false;
+      patchAppliedThisGame = false;
+      resetSpeedBoost();
+      isPaused = false;
+      particles.forEach(p => p.el.remove());
+      particles = [];
+      lastFrame = 0;
+
+      lifebars.forEach(bar => { bar.life = START_LIFE; bar.fill.style.width = START_LIFE + '%'; });
+      wall.style.backgroundColor = '';   // revert to CSS concrete grey
+      scoreEl.textContent = `SCORE: ${score}`;
+      applyCoatingBtn.style.display = 'none';
+      applyPatchBtn.style.display = 'none';
+      wallPatches.querySelectorAll('.patch').forEach(p => { p.style.transition = 'none'; p.style.opacity = '0'; });
+      requestAnimationFrame(() => {
+        wallPatches.querySelectorAll('.patch').forEach(p => { p.style.transition = ''; });
+      });
+      coatingLine.style.display = 'none';
+      coatingLine.style.opacity = '1';
+      coatingLine.style.transition = '';
+      coatingLine.style.animation = '';
+      coatingInFadePhase = false;
+      coatingFadeElapsed = 0;
+      protectedHitCount = 0;
+      document.getElementById('in-game-restart').style.display = 'flex';
+      document.documentElement.style.setProperty('--corrosion-level', '0');
+      document.documentElement.style.setProperty('--crack-level', '0');
+      crackPaths.forEach(p => { p.style.strokeWidth = '0'; p.style.opacity = '0'; });
+      currentCorrosionLevel = 0;
+      renderRebar();
+      updateLifebars();
+      lifebars.forEach(bar => { bar.startLife = bar.life; });
+
+      // Budget message — shows on all devices at game start
+      const pool = totalCost < BUDGET
+        ? BUDGET_JOKES
+        : ["Budget spent perfectly.", "Every cent counts.", "Full budget deployed."];
+      const msg = pool[Math.floor(Math.random() * pool.length)];
+      setTimeout(() => showWallMessage(msg, '#A8E6CF', 35, 45), 500);
+
+      // Show touch hint briefly on touch devices
+      if (isTouchDevice) {
+        touchHint.style.display = 'block';
+        touchHint.style.opacity = '1';
+        setTimeout(() => {
+          touchHint.style.opacity = '0';
+          setTimeout(() => { touchHint.style.display = 'none'; }, 1500);
+        }, 4000);
+      }
+
+      let fallSpeed = getFallSpeed(score);
+      clearInterval(gameInterval);
+      clearInterval(speedInterval);
+      gameInterval = setInterval(createSquare, fallSpeed);
+
+      speedInterval = setInterval(() => {
+        const newSpeed = getFallSpeed(score);
+        if (newSpeed !== fallSpeed) {
+          clearInterval(gameInterval);
+          fallSpeed = newSpeed;
+          gameInterval = setInterval(createSquare, fallSpeed);
+        }
+      }, 1000);
+
+      document.documentElement.style.setProperty('--bar-gradient-color', '#555555');
+    }
+
+    const H2O_SHAPE = {
+      label: 'H₂O', barIndex: -1, shape: 'circle', color: '#64B5F6', display: 'H₂O',
+    };
+
+    function spawnH2O() {
+      const el = document.createElement('div');
+      el.classList.add('square', 'circle');
+      el.style.left   = `${Math.random() * 90}%`;
+      el.dataset.type = 'H₂O';
+      el.innerHTML    = '<span class="shape-label">H₂O</span>';
+      gameContainer.appendChild(el);
+      particles.push({
+        el, shape: H2O_SHAPE, top: 0,
+        msgText: H2O_MESSAGES[Math.floor(Math.random() * H2O_MESSAGES.length)],
+        msgX: 5  + Math.random() * 62,
+        msgY: 20 + Math.random() * 58,
+      });
+    }
+
+    // Begins (or resumes) a boost segment for h2oBoostRemaining ms.
+    function startBoostSegment() {
+      clearTimeout(h2oSpeedTimeout);
+      clearInterval(h2oTimerInterval);
+      h2oBoostStart  = Date.now();
+      racquetSpeed   = RACQUET_SPEED_BASE() * H2O_BOOST_FACTOR;
+      h2oTimerEl.style.display = 'block';
+      const tick = () => {
+        const left = Math.ceil((h2oBoostRemaining - (Date.now() - h2oBoostStart)) / 1000);
+        h2oTimerEl.textContent = left > 0 ? left : '';
+      };
+      tick();
+      h2oTimerInterval = setInterval(tick, 250);
+      h2oSpeedTimeout = setTimeout(() => {
+        isSpeedBoosted   = false;
+        h2oBoostRemaining = 0;
+        racquetSpeed     = RACQUET_SPEED_BASE();
+        h2oTimerEl.style.display = 'none';
+        clearInterval(h2oTimerInterval);
+      }, h2oBoostRemaining);
+    }
+
+    function applySpeedBoost() {
+      // Stacking = restart the full duration (no extra multiplier)
+      isSpeedBoosted    = true;
+      h2oBoostRemaining = H2O_BOOST_DURATION;
+      startBoostSegment();
+    }
+
+    // Called from togglePause — freeze remaining time, stop timers
+    function pauseSpeedBoost() {
+      if (!isSpeedBoosted) return;
+      clearTimeout(h2oSpeedTimeout);
+      clearInterval(h2oTimerInterval);
+      h2oBoostRemaining = Math.max(0, h2oBoostRemaining - (Date.now() - h2oBoostStart));
+    }
+
+    function resumeSpeedBoost() {
+      if (!isSpeedBoosted) return;
+      if (h2oBoostRemaining <= 0) { resetSpeedBoost(); return; }
+      startBoostSegment();
+    }
+
+    function resetSpeedBoost() {
+      clearTimeout(h2oSpeedTimeout);
+      clearInterval(h2oTimerInterval);
+      isSpeedBoosted           = false;
+      h2oBoostRemaining        = 0;
+      racquetSpeed             = RACQUET_SPEED_BASE();
+      h2oTimerEl.style.display = 'none';
+      h2oTimerEl.textContent   = '';
+    }
+
+    function createSquare() {
+      if (isPaused || gameEnded) return;
+
+      const shape = SHAPES[Math.floor(Math.random() * SHAPES.length)];
+      const el    = document.createElement('div');
+      el.classList.add('square', shape.shape);
+      el.style.left   = `${Math.random() * 90}%`;
+      el.dataset.type = shape.label;
+      el.innerHTML    = `<span class="shape-label">${shape.display || shape.label}</span>`;
+      gameContainer.appendChild(el);
+
+      // Pre-assign message and position at spawn time so they're fixed per particle
+      const msgPool = MESSAGES[shape.label];
+      particles.push({
+        el, shape, top: 0,
+        msgText: msgPool[Math.floor(Math.random() * msgPool.length)],
+        msgX: 5  + Math.random() * 62,   // 5–67 vw (avoids right-edge clip)
+        msgY: 20 + Math.random() * 58,   // 20–78 vh (avoids lifebars + wall)
+      });
+
+      // H₂O: additional spawn — 1/15 chance for first 150 score, 1/30 thereafter
+      if (Math.random() < (score < 150 ? 1 / 15 : 1 / 30)) spawnH2O();
+    }
+
+    function handleCatch(p) {
+      p.el.remove();
+
+      // H₂O — triggers speed boost, no score point, blue racquet flash
+      if (p.shape.label === 'H₂O') {
+        racquet.style.backgroundColor = '#64B5F6';
+        setTimeout(() => { racquet.style.backgroundColor = 'white'; }, 150);
+        applySpeedBoost();
+        return;
+      }
+      score++;
+      scoreEl.textContent = `SCORE: ${score}`;
+      scoreEl.classList.remove('flash');
+      void scoreEl.offsetWidth;  // force reflow to restart animation
+      scoreEl.classList.add('flash');
+      racquet.style.backgroundColor = p.shape.color;
+      setTimeout(() => { racquet.style.backgroundColor = 'white'; }, 100);
+      if (score >= 100 && !coatingAppliedThisGame) applyCoatingBtn.style.display = 'block';
+      if (score >= PATCH_UNLOCK && !patchAppliedThisGame) applyPatchBtn.style.display = 'block';
+      if (!shownMilestones.has(score)) {
+        if (SCORE_MESSAGES[score]) {
+          showWallMessage(SCORE_MESSAGES[score], '#FFE566', 20 + Math.random() * 40, 18 + Math.random() * 38);
+          shownMilestones.add(score);
+        } else if (SCORE_RANDOM_MILESTONES.has(score)) {
+          const phrase = SCORE_RANDOM_PHRASES[Math.floor(Math.random() * SCORE_RANDOM_PHRASES.length)];
+          showWallMessage(phrase, '#A8E6CF', 20 + Math.random() * 40, 18 + Math.random() * 38);
+          shownMilestones.add(score);
+        }
+      }
+    }
+
+    function handleWallHit(p) {
+      p.el.remove();
+
+      // H₂O — neutral, no damage, no coating interaction
+      if (p.shape.label === 'H₂O') {
+        wall.style.backgroundColor = '#64B5F6';
+        setTimeout(() => { wall.style.backgroundColor = ''; }, 200);
+        showWallMessage(p.msgText, '#64B5F6', p.msgX, p.msgY);
+        return;
+      }
+
+      // Coating protection (solid phase only): absorb every odd hit (#1, #3, #5…)
+      if (isCoatingApplied && !coatingInFadePhase) {
+        protectedHitCount++;
+        if (protectedHitCount % 2 === 1) {
+          // Absorbed — purple flash, protection message, no damage, no educational message
+          wall.style.backgroundColor = '#C39BD3';
+          setTimeout(() => { wall.style.backgroundColor = ''; }, 200);
+          showWallMessage('Protected by coating!', '#C39BD3', p.msgX, p.msgY);
+          return;
+        }
+      }
+
+      wall.style.backgroundColor = p.shape.color;
+      setTimeout(() => { wall.style.backgroundColor = ''; }, 200);
+      const bar = lifebars[p.shape.barIndex];
+      bar.life -= DAMAGE_PER_HIT;
+      bar.fill.style.width = `${bar.life}%`;
+      updateBarColor();
+      showWallMessage(p.msgText, p.shape.color, p.msgX, p.msgY);
+      if (bar.life <= 0) endGame();
+    }
+
+    // Single rAF loop drives every active particle. Frame-rate independent via delta time;
+    // large deltas (tab was backgrounded) are clamped so particles never teleport.
+    function gameLoop(ts) {
+      requestAnimationFrame(gameLoop);
+      if (!gameStarted || gameEnded) { lastFrame = ts; return; }
+      if (isPaused) { lastFrame = ts; return; }
+
+      const dt = lastFrame ? ts - lastFrame : FRAME_BASELINE;
+      lastFrame = ts;
+      // Baseline 20ms matches the original setInterval cadence so fall speed is unchanged.
+      // Clamp large deltas (tab backgrounding / stalls) so particles never teleport.
+      const step = FALL_STEP * Math.min(dt, MAX_FRAME_DELTA) / FRAME_BASELINE;
+
+      // Racquet rect cached once per frame, not per particle
+      const rRect = racquet.getBoundingClientRect();
+      const wallTop = wall.offsetTop;
+
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.top += step;
+        p.el.style.top = `${p.top}px`;
+        const eRect = p.el.getBoundingClientRect();
+
+        // Racquet catch (AABB)
+        if (eRect.bottom >= rRect.top && eRect.top <= rRect.bottom &&
+            eRect.right  >= rRect.left && eRect.left <= rRect.right) {
+          particles.splice(i, 1);
+          handleCatch(p);
+          continue;
+        }
+        // Wall hit
+        if (p.top + step >= wallTop) {
+          particles.splice(i, 1);
+          handleWallHit(p);
+          if (gameEnded) break;   // endGame() empties particles[] — stop iterating immediately
+        }
+      }
+    }
+    requestAnimationFrame(gameLoop);
+
+    /* ================================================================
+       GAME END
+    ================================================================ */
+    function endGame() {
+      if (gameEnded) return;
+      gameEnded = true;
+
+      clearInterval(gameInterval);
+      clearInterval(speedInterval);
+      particles.forEach(p => p.el.remove());
+      particles = [];
+      clearTimeout(coatingTimeout);
+      clearTimeout(coatingFadeTimeout);
+      resetSpeedBoost();
+      if (coatingInFadePhase) {
+        const frozenOpacity = parseFloat(getComputedStyle(coatingLine).opacity);
+        coatingLine.style.transition = '';
+        coatingLine.style.opacity = String(Math.max(0, frozenOpacity));
+      }
+      coatingInFadePhase = false;
+
+      document.querySelectorAll('.square').forEach(el => el.remove());
+      document.querySelectorAll('.wall-message').forEach(el => el.remove());
+      isPaused = true;
+      autoPaused = false;
+
+      // Clean up in-game restart button — game-over modal has its own restart
+      clearTimeout(restartConfirmTimeout);
+      restartConfirmPending = false;
+      inGameRestartBtn.style.display = 'none';
+
+      if (score > hiScore) {
+        hiScore = score;
+        try { localStorage.setItem('durabilityHiScore', hiScore); } catch (e) { /* private mode — skip persistence */ }
+      }
+      hiScoreDisplay.textContent = hiScore;
+      gameOverPhrase.textContent = GAME_OVER_PHRASES[Math.floor(Math.random() * GAME_OVER_PHRASES.length)];
+      finalScoreEl.textContent   = score;
+      gameOverModal.style.display = 'block';
+    }
+
+    document.getElementById('restart-button').addEventListener('click', () => {
+      gameOverModal.style.display = 'none';
+      location.reload();
+    });
+
+    /* ================================================================
+       PAUSE
+    ================================================================ */
+    function togglePause() {
+      if (gameEnded) return;
+      isPaused = !isPaused;
+      if (isPaused) {
+        pauseIndicator.style.display = 'block';
+        pauseSpeedBoost();
+        if (isCoatingApplied) {
+          clearTimeout(coatingTimeout);
+          clearTimeout(coatingFadeTimeout);
+          if (coatingInFadePhase) {
+            // Freeze the CSS transition at current rendered opacity
+            const frozenOpacity = parseFloat(getComputedStyle(coatingLine).opacity);
+            coatingLine.style.transition = '';
+            coatingLine.style.opacity    = String(Math.max(0, frozenOpacity));
+            coatingFadeElapsed = Math.round((1 - frozenOpacity) * COATING_FADE);
+          } else {
+            coatingRemainingTime = Math.max(0, coatingRemainingTime - (Date.now() - coatingStartTime));
+          }
+          coatingLine.style.animationPlayState = 'paused';
+        }
+      } else {
+        pauseIndicator.style.display = 'none';
+        resumeSpeedBoost();
+        if (isCoatingApplied) {
+          coatingStartTime = Date.now();
+          coatingLine.style.animationPlayState = 'running';
+          if (coatingInFadePhase) {
+            startCoatingFade();   // resumes from coatingFadeElapsed
+          } else {
+            coatingTimeout = setTimeout(() => {
+              coatingInFadePhase = true;
+              coatingFadeElapsed = 0;
+              startCoatingFade();
+            }, coatingRemainingTime);
+          }
+        }
+      }
+    }
+
+    document.getElementById('pause-button').addEventListener('click', togglePause);
+
+    /* ================================================================
+       COATING
+    ================================================================ */
+    // Starts (or resumes) the 10s opacity fade. coatingFadeElapsed tracks how much
+    // has already played so we can resume from the correct point after a pause.
+    function startCoatingFade() {
+      const remaining = Math.max(200, COATING_FADE - coatingFadeElapsed);
+      const fromOpacity = 1 - coatingFadeElapsed / COATING_FADE;
+      coatingLine.style.animation  = 'none';   // stop shimmer — it animates opacity and would override the fade
+      coatingLine.style.transition = `opacity ${(remaining / 1000).toFixed(2)}s linear`;
+      coatingLine.style.opacity    = String(fromOpacity);
+      // Give the browser one frame to register the starting opacity before transitioning
+      requestAnimationFrame(() => {
+        coatingLine.style.opacity = '0';
+      });
+      coatingFadeTimeout = setTimeout(() => {
+        coatingLine.style.display    = 'none';
+        coatingLine.style.opacity    = '1';
+        coatingLine.style.transition = '';
+        coatingLine.style.animation  = '';   // restore shimmer for next time
+        isCoatingApplied    = false;
+        coatingInFadePhase  = false;
+        coatingFadeElapsed  = 0;
+      }, remaining);
+    }
+
+    function applyCoating() {
+      if (score < 100 || coatingAppliedThisGame || gameEnded || isPaused) return;
+      score -= COATING_COST;
+      scoreEl.textContent = `SCORE: ${score}`;
+      lifebars.forEach(bar => {
+        bar.life = Math.min(100, bar.life + COATING_BOOST);
+        bar.fill.style.width = `${bar.life}%`;
+      });
+      updateBarColor();
+      coatingLine.style.opacity    = '1';
+      coatingLine.style.transition = '';
+      coatingLine.style.animation  = '';   // restore shimmer (cleared at end of previous fade)
+      coatingLine.style.display    = 'block';
+      isCoatingApplied       = true;
+      coatingAppliedThisGame = true;
+      coatingInFadePhase     = false;
+      coatingFadeElapsed     = 0;
+      protectedHitCount      = 0;   // first hit after applying will be absorbed (#1)
+      coatingStartTime       = Date.now();
+      coatingRemainingTime   = COATING_DURATION;
+      coatingTimeout = setTimeout(() => {
+        coatingInFadePhase = true;
+        coatingFadeElapsed = 0;
+        startCoatingFade();
+      }, COATING_DURATION);
+      applyCoatingBtn.style.display = 'none';
+    }
+
+    applyCoatingBtn.addEventListener('click', applyCoating);
+
+    function applyPatch() {
+      if (score < PATCH_UNLOCK || patchAppliedThisGame || gameEnded || isPaused) return;
+      score -= PATCH_COST;
+      scoreEl.textContent = `SCORE: ${score}`;
+      lifebars.forEach(bar => {
+        bar.life = Math.min(100, bar.life + PATCH_BOOST);
+        bar.fill.style.width = `${bar.life}%`;
+      });
+      updateBarColor();
+      patchAppliedThisGame = true;
+      applyPatchBtn.style.display = 'none';
+      // Reveal the 4 patches one-by-one, each fading in over 0.5s, 0.5s apart
+      const patches = wallPatches.querySelectorAll('.patch');
+      patches.forEach((patch, i) => {
+        setTimeout(() => {
+          if (!gameEnded) patch.style.opacity = '1';
+        }, i * PATCH_STAGGER);
+      });
+      showWallMessage('Patch repair applied!', '#D6D2CA', 35, 45);
+    }
+
+    applyPatchBtn.addEventListener('click', applyPatch);
+
+    /* ================================================================
+       WALL-IMPACT MESSAGES
+    ================================================================ */
+    function showWallMessage(text, color, xVw, yVh) {
+      if (gameEnded) return;
+      const el = document.createElement('div');
+      el.className   = 'wall-message';
+      el.textContent = text;
+      el.style.color = color;
+      el.style.left  = `${xVw}vw`;
+      el.style.top   = `${yVh}vh`;
+      document.body.appendChild(el);
+
+      // Needs two rAF ticks so the browser registers the initial opacity:0
+      // before transitioning to 1 (otherwise the transition is skipped)
+      requestAnimationFrame(() => requestAnimationFrame(() => { el.style.opacity = '1'; }));
+
+      setTimeout(() => {
+        el.style.transition = 'opacity 0.4s ease';
+        el.style.opacity    = '0';
+        setTimeout(() => el.remove(), 400);
+      }, 2500);
+    }
+
+    /* ================================================================
+       TOOLTIPS — listener on .tooltip-trigger (now includes .lifebar divs
+       so the whole bar triggers the tooltip, not just the text label).
+       Use e.currentTarget so we always read from the element that has
+       the data-tooltip attribute, even when the mouse is over a child.
+    ================================================================ */
+    const tooltip = document.getElementById('tooltip');
+    document.addEventListener('touchstart', () => { tooltip.style.display = 'none'; }, { passive: true });
+    document.querySelectorAll('.tooltip-trigger').forEach(el => {
+      el.addEventListener('mouseenter', e => {
+        tooltip.textContent = e.currentTarget.getAttribute('data-tooltip');
+        tooltip.style.display = 'block';
+      });
+      el.addEventListener('mousemove', e => {
+        tooltip.style.left  = e.clientX > window.innerWidth * 0.6
+          ? 'auto'
+          : `${e.clientX + 12}px`;
+        tooltip.style.right = e.clientX > window.innerWidth * 0.6
+          ? `${window.innerWidth - e.clientX + 8}px`
+          : 'auto';
+        tooltip.style.top   = `${e.clientY + 12}px`;
+      });
+      el.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+    });
+
+    /* ================================================================
+       IN-GAME RESTART BUTTON
+       First tap: turns red, shows "SURE?" — resets after 3 s if ignored.
+       Second tap within 3 s: reloads the page.
+    ================================================================ */
+    let   restartConfirmPending = false;
+    let   restartConfirmTimeout = null;
+
+    inGameRestartBtn.addEventListener('click', () => {
+      if (!restartConfirmPending) {
+        restartConfirmPending = true;
+        inGameRestartBtn.classList.add('confirm', 'pop');
+        setTimeout(() => inGameRestartBtn.classList.remove('pop'), 220);
+        restartConfirmTimeout = setTimeout(() => {
+          restartConfirmPending = false;
+          inGameRestartBtn.classList.remove('confirm');
+        }, 3000);
+      } else {
+        clearTimeout(restartConfirmTimeout);
+        location.reload();
+      }
+    });
+
+    /* ================================================================
+       SCREENSHOT
+    ================================================================ */
+    function loadHtml2Canvas(cb) {
+      if (window.html2canvas) { cb(); return; }
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+      s.onload = cb;
+      document.head.appendChild(s);
+    }
+
+    document.getElementById('screenshot-button').addEventListener('click', () => {
+      loadHtml2Canvas(() => {
+        html2canvas(gameOverModal, { backgroundColor: null }).then(canvas => {
+          const link = document.getElementById('download-link');
+          link.href = canvas.toDataURL('image/png');
+          link.download = 'durability_result.png';
+          link.click();
+        });
+      });
+    });
+
+    // by Egor Volkov
+    renderRebar();  // draw clean steel rebar on page load (visible during setup modal)
+  </script>
+</body>
+</html>
